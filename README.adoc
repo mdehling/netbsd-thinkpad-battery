@@ -1,4 +1,4 @@
-= ThinkPad Battery Module for NetBSD
+= NetBSD ThinkPad Battery Kernel Module
 Malte Dehling <mdehling@gmail.com>
 
 This is a simple NetBSD kernel module which provides the sysctl variables
@@ -7,9 +7,18 @@ of a thinkpad battery can be modified.
 
 Build Instructions
 ------------------
-Place the `tpbat` directory of this repository in the `sys/modules` directory
-of your NetBSD source tree and run `nbmake-amd64` from inside.  This should
-produce `tpbat.kmod` which you can load with `modload ./tpbat.kmod`.
+Place the content of the `src` directory of this repository in your NetBSD
+source tree and run the following commands:
+
+[source,shell-session]
+----
+# cd src/sys/modules/tpbat
+# /path/to/tooldir/bin/nbmake-amd64
+[...]
+----
+
+This should leave `tpbat.kmod` in `/path/to/objdir/sys/modules/tpbat`, which
+you can load with `modload /path/to/tpbat.kmod`.
 
 DISCLAIMER
 ----------
