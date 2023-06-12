@@ -1,0 +1,16 @@
+= ThinkPad Battery Module for NetBSD
+Malte Dehling <mdehling@gmail.com>
+
+This is a simple NetBSD kernel module which provides the sysctl variables
+`tpbat.charge_start` and `tpbat.charge_stop` by which the charging behavior
+of a thinkpad battery can be modified.
+
+Build Instructions
+------------------
+Place the `tpbat` directory of this repository in the `sys/modules` directory
+of your NetBSD source tree and run `nbmake-amd64` from inside.  This should
+produce `tpbat.kmod` which you can load with `modload ./tpbat.kmod`.
+
+DISCLAIMER
+----------
+Use at your own risk.
