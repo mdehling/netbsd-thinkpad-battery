@@ -41,11 +41,8 @@
 MODULE(MODULE_CLASS_MISC, tpbat, NULL);
 
 
-#define ACPI_SET_CHARGE_START	"\\_SB.PCI0.LPC.EC.HKEY.BCCS"
-#define ACPI_SET_CHARGE_STOP	"\\_SB.PCI0.LPC.EC.HKEY.BCSS"
-
-
 static struct tpbat_softc {
+	ACPI_HANDLE		 ec_hkey_hdl;
 	int			 charge_start;
 	int			 charge_stop;
 	struct sysctllog	*sc_log;
@@ -59,17 +56,19 @@ tpbat_set_acpi_charge_thresholds(struct tpbat_softc *sc)
 	ACPI_INTEGER charge_stop = (ACPI_INTEGER)sc->charge_stop;
 	ACPI_STATUS rv;
 
-	rv = acpi_eval_set_integer(NULL, ACPI_SET_CHARGE_START, charge_start);
+	rv = acpi_eval_set_integer(sc->ec_hkey_hdl, "BCCS", charge_start);
 	if (ACPI_FAILURE(rv)) {
-		aprint_error("failed to set %s: %s\n",
-			ACPI_SET_CHARGE_START, AcpiFormatException(rv));
+		aprint_error("failed to set %s.%s: %s\n",
+			acpi_name(sc->ec_hkey_hdl), "BCCS",
+			AcpiFormatException(rv));
 		return EIO;
 	};
 
-	rv = acpi_eval_set_integer(NULL, ACPI_SET_CHARGE_STOP, charge_stop);
+	rv = acpi_eval_set_integer(sc->ec_hkey_hdl, "BCSS", charge_stop);
 	if (ACPI_FAILURE(rv)) {
-		aprint_error("failed to set %s: %s\n",
-			ACPI_SET_CHARGE_STOP, AcpiFormatException(rv));
+		aprint_error("failed to set %s.%s: %s\n",
+			acpi_name(sc->ec_hkey_hdl), "BCSS",
+			AcpiFormatException(rv));
 		return EIO;
 	};
 
@@ -125,7 +124,7 @@ tpbat_sysctl_charge_stop(SYSCTLFN_ARGS)
 	return error;
 }
 
-static void
+static int
 tpbat_sysctl_setup(struct tpbat_softc *sc)
 {
 	const struct sysctlnode *rnode;
@@ -136,8 +135,10 @@ tpbat_sysctl_setup(struct tpbat_softc *sc)
 		"tpbat", SYSCTL_DESCR("ThinkPad battery controls"),
 		NULL, 0, NULL, 0,
 		CTL_CREATE, CTL_EOL);
-	if (rv != 0)
-		goto fail;
+	if (rv != 0) {
+		aprint_error("unable to add sysctl nodes\n");
+		return rv;
+	};
 
 	sysctl_createv(&sc->sc_log, 0, &rnode, NULL,
 		CTLFLAG_PERMANENT|CTLFLAG_READWRITE, CTLTYPE_INT,
@@ -149,18 +150,46 @@ tpbat_sysctl_setup(struct tpbat_softc *sc)
 		"charge_stop", SYSCTL_DESCR("charge stop threshold"),
 		tpbat_sysctl_charge_stop, 0, (void *)sc, 0,
 		CTL_CREATE, CTL_EOL);
-	return;
- fail:
-	aprint_error("unable to add sysctl nodes\n");
+
+	return 0;
 }
 
+
+static const char *ec_hkey_path[] = {
+	"\\_SB.PCI0.LPC.EC.HKEY",
+	"\\_SB.PCI0.LPCB.EC.HKEY",
+	"\\_SB.PCI0.LPCB.EC0.HKEY",
+	"\\_SB.PCI0.LPCB.H_EC.HKEY",
+};
+
 static int
-tpbat_modcmd(modcmd_t cmd, void *arg __unused)
+find_ec_hkey_handle(struct tpbat_softc *sc)
+{
+	ACPI_STATUS rv;
+	size_t i;
+
+	for (i = 0; i < __arraycount(ec_hkey_path); i++) {
+		rv = AcpiGetHandle(NULL, ec_hkey_path[i], &sc->ec_hkey_hdl);
+		if (ACPI_SUCCESS(rv))
+			return 0;
+	};
+
+	aprint_error("no acpi path for ec.hkey found\n");
+	return ENOENT;
+}
+
+
+static int
+tpbat_modcmd(modcmd_t cmd, void *args __unused)
 {
 	switch(cmd) {
 		case MODULE_CMD_INIT:
-			tpbat_sysctl_setup(&tpbat_sc);
-			break;
+		{	int rv;
+			if ((rv = find_ec_hkey_handle(&tpbat_sc)) != 0)
+				return rv;
+			if ((rv = tpbat_sysctl_setup(&tpbat_sc)) != 0)
+				return rv;
+		};	break;
 		case MODULE_CMD_FINI:
 			tpbat_sc.charge_start = 0;
 			tpbat_sc.charge_stop = 0;
