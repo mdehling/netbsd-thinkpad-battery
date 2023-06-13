@@ -49,6 +49,78 @@ static struct tpbat_softc {
 } tpbat_sc;
 
 
+static ACPI_STATUS
+acpi_eval_int_int(ACPI_HANDLE handle, const char *path,
+		ACPI_INTEGER in, ACPI_INTEGER *outp)
+{
+	ACPI_OBJECT in_obj;
+	ACPI_OBJECT_LIST args;
+	ACPI_OBJECT out_obj;
+	ACPI_BUFFER buf;
+	ACPI_STATUS rv;
+
+	if (handle == NULL)
+		handle = ACPI_ROOT_OBJECT;
+
+	in_obj.Type = ACPI_TYPE_INTEGER;
+	in_obj.Integer.Value = in;
+
+	args.Count = 1;
+	args.Pointer = &in_obj;
+
+	memset(&out_obj, 0, sizeof out_obj);
+	buf.Pointer = &out_obj;
+	buf.Length = sizeof out_obj;
+
+	rv = AcpiEvaluateObject(handle, path, &args, &buf);
+	if (ACPI_FAILURE(rv))
+		return rv;
+
+	if (buf.Length == 0)
+		return AE_NULL_OBJECT;
+
+	if (out_obj.Type != ACPI_TYPE_INTEGER)
+		return AE_TYPE;
+
+	if (outp != NULL)
+		*outp = out_obj.Integer.Value;
+
+	return AE_OK;
+}
+
+
+static int
+tpbat_get_acpi_charge_thresholds(struct tpbat_softc *sc)
+{
+	ACPI_INTEGER charge_start;
+	ACPI_INTEGER charge_stop;
+	ACPI_STATUS rv;
+
+	rv = acpi_eval_int_int(sc->ec_hkey_hdl, "BCTG", 1, &charge_start);
+	if (ACPI_FAILURE(rv)) {
+		aprint_error("failed to get %s.%s: %s\n",
+			acpi_name(sc->ec_hkey_hdl), "BCTG",
+			AcpiFormatException(rv));
+		return EIO;
+	};
+
+	rv = acpi_eval_int_int(sc->ec_hkey_hdl, "BCSG", 1, &charge_stop);
+	if (ACPI_FAILURE(rv)) {
+		aprint_error("failed to get %s.%s: %s\n",
+			acpi_name(sc->ec_hkey_hdl), "BCSG",
+			AcpiFormatException(rv));
+		return EIO;
+	};
+
+	if (charge_start & (1<<31) || charge_stop & (1<<31)) {
+		aprint_error("acpi call returned failure\n");
+	};
+
+	sc->charge_start = charge_start & 0x7f;
+	sc->charge_stop = charge_stop & 0x7f;
+	return 0;
+}
+
 static int
 tpbat_set_acpi_charge_thresholds(struct tpbat_softc *sc)
 {
@@ -81,23 +153,27 @@ tpbat_sysctl_charge_start(SYSCTLFN_ARGS)
 {
 	struct sysctlnode node = *rnode;
 	struct tpbat_softc *sc = node.sysctl_data;
-	int val = sc->charge_start;
-	int error;
+	int val;
+	int rv;
+
+	tpbat_get_acpi_charge_thresholds(sc);
+
+	val = sc->charge_start;
 
 	node.sysctl_data = &val;
-	error = sysctl_lookup(SYSCTLFN_CALL(&node));
-	if (error || newp == NULL)
-		return error;
+	rv = sysctl_lookup(SYSCTLFN_CALL(&node));
+	if (rv != 0 || newp == NULL)
+		return rv;
 
 	if (val < 0 || val > 100)
 		return EINVAL;
 
 	sc->charge_start = val;
-	sc->charge_stop = (val > sc->charge_stop ? val : sc->charge_stop);
+	//sc->charge_stop = (val > sc->charge_stop ? val : sc->charge_stop);
 
 	tpbat_set_acpi_charge_thresholds(sc);
 
-	return error;
+	return 0;
 }
 
 static int
@@ -105,23 +181,27 @@ tpbat_sysctl_charge_stop(SYSCTLFN_ARGS)
 {
 	struct sysctlnode node = *rnode;
 	struct tpbat_softc *sc = node.sysctl_data;
-	int val = sc->charge_stop;
-	int error;
+	int val;
+	int rv;
+
+	tpbat_get_acpi_charge_thresholds(sc);
+
+	val = sc->charge_stop;
 
 	node.sysctl_data = &val;
-	error = sysctl_lookup(SYSCTLFN_CALL(&node));
-	if (error || newp == NULL)
-		return error;
+	rv = sysctl_lookup(SYSCTLFN_CALL(&node));
+	if (rv != 0 || newp == NULL)
+		return rv;
 
 	if (val < sc->charge_start || val > 100)
 		return EINVAL;
 
-	sc->charge_start = (val < sc->charge_start ? val : sc->charge_start);
+	//sc->charge_start = (val < sc->charge_start ? val : sc->charge_start);
 	sc->charge_stop = val;
 
 	tpbat_set_acpi_charge_thresholds(sc);
 
-	return error;
+	return 0;
 }
 
 static int
