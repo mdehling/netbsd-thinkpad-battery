@@ -2,8 +2,8 @@
 Malte Dehling <mdehling@gmail.com>
 
 This is a simple NetBSD kernel module which provides the sysctl variables
-`tpbat.charge_start` and `tpbat.charge_stop` by which the charging behavior
-of a thinkpad battery can be modified.
+`tpbat.charge_start`, `tpbat.charge_stop`, and `tpbat.force_discharge` by
+which the charging behavior of a thinkpad battery can be modified.
 
 Build Instructions
 ------------------

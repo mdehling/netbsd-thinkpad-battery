@@ -43,8 +43,6 @@ MODULE(MODULE_CLASS_MISC, tpbat, NULL);
 
 static struct tpbat_softc {
 	ACPI_HANDLE		 ec_hkey_hdl;
-	int			 charge_start;
-	int			 charge_stop;
 	struct sysctllog	*sc_log;
 } tpbat_sc;
 
@@ -90,13 +88,12 @@ acpi_eval_int_int(ACPI_HANDLE handle, const char *path,
 
 
 static int
-tpbat_get_acpi_charge_thresholds(struct tpbat_softc *sc)
+tpbat_get_acpi_charge_start(struct tpbat_softc *sc, int *charge_start)
 {
-	ACPI_INTEGER charge_start;
-	ACPI_INTEGER charge_stop;
+	ACPI_INTEGER val;
 	ACPI_STATUS rv;
 
-	rv = acpi_eval_int_int(sc->ec_hkey_hdl, "BCTG", 1, &charge_start);
+	rv = acpi_eval_int_int(sc->ec_hkey_hdl, "BCTG", 1, &val);
 	if (ACPI_FAILURE(rv)) {
 		aprint_error("failed to get %s.%s: %s\n",
 			acpi_name(sc->ec_hkey_hdl), "BCTG",
@@ -104,7 +101,23 @@ tpbat_get_acpi_charge_thresholds(struct tpbat_softc *sc)
 		return EIO;
 	};
 
-	rv = acpi_eval_int_int(sc->ec_hkey_hdl, "BCSG", 1, &charge_stop);
+	if (val & (1<<31))
+		aprint_error("acpi call %s.%s returned failure\n",
+			acpi_name(sc->ec_hkey_hdl), "BCTG");
+
+	if (charge_start)
+		*charge_start = val & 0x7f;
+
+	return 0;
+}
+
+static int
+tpbat_get_acpi_charge_stop(struct tpbat_softc *sc, int *charge_stop)
+{
+	ACPI_INTEGER val;
+	ACPI_STATUS rv;
+
+	rv = acpi_eval_int_int(sc->ec_hkey_hdl, "BCSG", 1, &val);
 	if (ACPI_FAILURE(rv)) {
 		aprint_error("failed to get %s.%s: %s\n",
 			acpi_name(sc->ec_hkey_hdl), "BCSG",
@@ -112,23 +125,47 @@ tpbat_get_acpi_charge_thresholds(struct tpbat_softc *sc)
 		return EIO;
 	};
 
-	if (charge_start & (1<<31) || charge_stop & (1<<31)) {
-		aprint_error("acpi call returned failure\n");
-	};
+	if (val & (1<<31))
+		aprint_error("acpi call %s.%s returned failure\n",
+			acpi_name(sc->ec_hkey_hdl), "BCSG");
 
-	sc->charge_start = charge_start & 0x7f;
-	sc->charge_stop = charge_stop & 0x7f;
+	if (charge_stop)
+		*charge_stop = val & 0x7f;
+
 	return 0;
 }
 
 static int
-tpbat_set_acpi_charge_thresholds(struct tpbat_softc *sc)
+tpbat_get_acpi_force_discharge(struct tpbat_softc *sc, int *force_discharge)
 {
-	ACPI_INTEGER charge_start = (ACPI_INTEGER)sc->charge_start;
-	ACPI_INTEGER charge_stop = (ACPI_INTEGER)sc->charge_stop;
+	ACPI_INTEGER val;
 	ACPI_STATUS rv;
 
-	rv = acpi_eval_set_integer(sc->ec_hkey_hdl, "BCCS", charge_start);
+	rv = acpi_eval_int_int(sc->ec_hkey_hdl, "BDSG", 1, &val);
+	if (ACPI_FAILURE(rv)) {
+		aprint_error("failed to get %s.%s: %s\n",
+			acpi_name(sc->ec_hkey_hdl), "BDSG",
+			AcpiFormatException(rv));
+		return EIO;
+	};
+
+	if (val & (1<<31))
+		aprint_error("acpi call %s.%s returned failure\n",
+			acpi_name(sc->ec_hkey_hdl), "BDSG");
+
+	if (force_discharge)
+		*force_discharge = val & 0x03;
+
+	return 0;
+}
+
+static int
+tpbat_set_acpi_charge_start(struct tpbat_softc *sc, int charge_start)
+{
+	ACPI_STATUS rv;
+
+	rv = acpi_eval_set_integer(sc->ec_hkey_hdl, "BCCS",
+		charge_start & 0x7f);
 	if (ACPI_FAILURE(rv)) {
 		aprint_error("failed to set %s.%s: %s\n",
 			acpi_name(sc->ec_hkey_hdl), "BCCS",
@@ -136,10 +173,36 @@ tpbat_set_acpi_charge_thresholds(struct tpbat_softc *sc)
 		return EIO;
 	};
 
-	rv = acpi_eval_set_integer(sc->ec_hkey_hdl, "BCSS", charge_stop);
+	return 0;
+}
+
+static int
+tpbat_set_acpi_charge_stop(struct tpbat_softc *sc, int charge_stop)
+{
+	ACPI_STATUS rv;
+
+	rv = acpi_eval_set_integer(sc->ec_hkey_hdl, "BCSS",
+		charge_stop & 0x7f);
 	if (ACPI_FAILURE(rv)) {
 		aprint_error("failed to set %s.%s: %s\n",
 			acpi_name(sc->ec_hkey_hdl), "BCSS",
+			AcpiFormatException(rv));
+		return EIO;
+	};
+
+	return 0;
+}
+
+static int
+tpbat_set_acpi_force_discharge(struct tpbat_softc *sc, int force_discharge)
+{
+	ACPI_STATUS rv;
+
+	rv = acpi_eval_set_integer(sc->ec_hkey_hdl, "BDSS",
+		force_discharge & 0x03);
+	if (ACPI_FAILURE(rv)) {
+		aprint_error("failed to set %s.%s: %s\n",
+			acpi_name(sc->ec_hkey_hdl), "BDSS",
 			AcpiFormatException(rv));
 		return EIO;
 	};
@@ -153,25 +216,20 @@ tpbat_sysctl_charge_start(SYSCTLFN_ARGS)
 {
 	struct sysctlnode node = *rnode;
 	struct tpbat_softc *sc = node.sysctl_data;
-	int val;
+	int charge_start;
 	int rv;
 
-	tpbat_get_acpi_charge_thresholds(sc);
+	tpbat_get_acpi_charge_start(sc, &charge_start);
 
-	val = sc->charge_start;
-
-	node.sysctl_data = &val;
+	node.sysctl_data = &charge_start;
 	rv = sysctl_lookup(SYSCTLFN_CALL(&node));
 	if (rv != 0 || newp == NULL)
 		return rv;
 
-	if (val < 0 || val > 100)
+	if (charge_start < 0 || charge_start > 100)
 		return EINVAL;
 
-	sc->charge_start = val;
-	//sc->charge_stop = (val > sc->charge_stop ? val : sc->charge_stop);
-
-	tpbat_set_acpi_charge_thresholds(sc);
+	tpbat_set_acpi_charge_start(sc, charge_start);
 
 	return 0;
 }
@@ -181,25 +239,43 @@ tpbat_sysctl_charge_stop(SYSCTLFN_ARGS)
 {
 	struct sysctlnode node = *rnode;
 	struct tpbat_softc *sc = node.sysctl_data;
-	int val;
+	int charge_stop;
 	int rv;
 
-	tpbat_get_acpi_charge_thresholds(sc);
+	tpbat_get_acpi_charge_stop(sc, &charge_stop);
 
-	val = sc->charge_stop;
-
-	node.sysctl_data = &val;
+	node.sysctl_data = &charge_stop;
 	rv = sysctl_lookup(SYSCTLFN_CALL(&node));
 	if (rv != 0 || newp == NULL)
 		return rv;
 
-	if (val < sc->charge_start || val > 100)
+	if (charge_stop < 0 || charge_stop > 100)
 		return EINVAL;
 
-	//sc->charge_start = (val < sc->charge_start ? val : sc->charge_start);
-	sc->charge_stop = val;
+	tpbat_set_acpi_charge_stop(sc, charge_stop);
 
-	tpbat_set_acpi_charge_thresholds(sc);
+	return 0;
+}
+
+static int
+tpbat_sysctl_force_discharge(SYSCTLFN_ARGS)
+{
+	struct sysctlnode node = *rnode;
+	struct tpbat_softc *sc = node.sysctl_data;
+	int force_discharge;
+	int rv;
+
+	tpbat_get_acpi_force_discharge(sc, &force_discharge);
+
+	node.sysctl_data = &force_discharge;
+	rv = sysctl_lookup(SYSCTLFN_CALL(&node));
+	if (rv != 0 || newp == NULL)
+		return rv;
+
+	if (force_discharge < 0 || force_discharge > 3)
+		return EINVAL;
+
+	tpbat_set_acpi_force_discharge(sc, force_discharge);
 
 	return 0;
 }
@@ -229,6 +305,11 @@ tpbat_sysctl_setup(struct tpbat_softc *sc)
 		CTLFLAG_PERMANENT|CTLFLAG_READWRITE, CTLTYPE_INT,
 		"charge_stop", SYSCTL_DESCR("charge stop threshold"),
 		tpbat_sysctl_charge_stop, 0, (void *)sc, 0,
+		CTL_CREATE, CTL_EOL);
+	sysctl_createv(&sc->sc_log, 0, &rnode, NULL,
+		CTLFLAG_PERMANENT|CTLFLAG_READWRITE, CTLTYPE_INT,
+		"force_discharge", SYSCTL_DESCR("force discharge mode"),
+		tpbat_sysctl_force_discharge, 0, (void *)sc, 0,
 		CTL_CREATE, CTL_EOL);
 
 	return 0;
@@ -271,9 +352,9 @@ tpbat_modcmd(modcmd_t cmd, void *args __unused)
 				return rv;
 		};	break;
 		case MODULE_CMD_FINI:
-			tpbat_sc.charge_start = 0;
-			tpbat_sc.charge_stop = 0;
-			if (tpbat_set_acpi_charge_thresholds(&tpbat_sc) != 0)
+			if (tpbat_set_acpi_charge_start(&tpbat_sc, 0) != 0 ||
+			    tpbat_set_acpi_charge_stop(&tpbat_sc, 0) != 0 ||
+			    tpbat_set_acpi_force_discharge(&tpbat_sc, 0) != 0)
 				aprint_error("failed to reset defaults\n");
 			sysctl_teardown(&tpbat_sc.sc_log);
 			break;
